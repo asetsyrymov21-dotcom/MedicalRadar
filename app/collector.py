@@ -22,6 +22,7 @@ GOOGLE_NEWS_RSS_URL = "https://news.google.com/rss/search"
 class TopicQuery:
     topic: str
     terms: list[str]
+    watchlist_name: str = ""
 
 
 TOPIC_QUERIES = [
@@ -36,9 +37,9 @@ TOPIC_QUERIES = [
 ]
 
 
-def collect_candidates(limit_per_topic: int = 5) -> list[dict[str, Any]]:
+def collect_candidates(limit_per_topic: int = 5, topic_queries: list[TopicQuery] | None = None) -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
-    for topic in TOPIC_QUERIES:
+    for topic in topic_queries or TOPIC_QUERIES:
         candidates.extend(collect_pubmed(topic, limit_per_topic))
         candidates.extend(collect_google_news(topic, limit_per_topic))
     return dedupe_candidates(candidates)
@@ -68,6 +69,7 @@ def collect_pubmed(topic: TopicQuery, limit: int) -> list[dict[str, Any]]:
                 "summary": clean_text(summary.get("fulljournalname", "")),
                 "claims": f"PubMed indexed publication. PMID: {pubmed_id}",
                 "url": url,
+                "watchlist_matches": topic.watchlist_name,
             }
         )
     return items
@@ -119,6 +121,7 @@ def collect_google_news(topic: TopicQuery, limit: int) -> list[dict[str, Any]]:
                 "summary": description,
                 "claims": "News/RSS item; verify primary paper, trial registry, or company release.",
                 "url": link,
+                "watchlist_matches": topic.watchlist_name,
             }
         )
     return items

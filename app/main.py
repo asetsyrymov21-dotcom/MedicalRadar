@@ -13,6 +13,7 @@ from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel, Field, HttpUrl
 
 from app import settings
+from app.collector import TOPIC_QUERIES, TopicQuery
 
 
 DATABASE_PATH = Path(settings.DATABASE_PATH)
@@ -133,6 +134,38 @@ INITIAL_TOPICS = [
     },
 ]
 
+INITIAL_WATCHLIST = [
+    {
+        "name": "David Sinclair",
+        "topic": "Longevity / омоложение",
+        "keywords": [
+            "David Sinclair",
+            "David A. Sinclair",
+            "Sinclair Lab",
+            "Sinclair longevity",
+            "Sinclair aging",
+            "Sinclair epigenetic reprogramming",
+            "Life Biosciences",
+            "ER-100",
+            "ER-300",
+        ],
+        "notes": "Aging, epigenetics, partial reprogramming, Life Biosciences.",
+    },
+    {
+        "name": "Professor Harrington",
+        "topic": "Рак / онкология",
+        "keywords": [
+            "Kevin Harrington",
+            "Kevin J. Harrington",
+            "Professor Harrington cancer",
+            "Harrington oncology",
+            "Harrington immunotherapy",
+            "Harrington oncolytic virus",
+        ],
+        "notes": "Likely Kevin Harrington in oncology; verify exact person if needed.",
+    },
+]
+
 
 class TopicCreate(BaseModel):
     name: str = Field(min_length=1)
@@ -145,6 +178,27 @@ class TopicUpdate(BaseModel):
 
 
 class TopicOut(TopicCreate):
+    id: int
+    created_at: str
+
+
+class WatchlistCreate(BaseModel):
+    name: str = Field(min_length=1)
+    topic: str = Field(default="unknown")
+    keywords: list[str] = Field(default_factory=list)
+    notes: str = Field(default="")
+    active: bool = True
+
+
+class WatchlistUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1)
+    topic: str | None = None
+    keywords: list[str] | None = None
+    notes: str | None = None
+    active: bool | None = None
+
+
+class WatchlistOut(WatchlistCreate):
     id: int
     created_at: str
 
@@ -165,6 +219,7 @@ class NewsBase(BaseModel):
     practical_relevance: str = Field(default="")
     url: HttpUrl | str | None = None
     needs_verification: bool = False
+    watchlist_matches: str = ""
 
 
 class NewsCreate(NewsBase):
@@ -187,6 +242,7 @@ class NewsUpdate(BaseModel):
     practical_relevance: str | None = None
     url: HttpUrl | str | None = None
     needs_verification: bool | None = None
+    watchlist_matches: str | None = None
 
 
 class NewsOut(NewsBase):
@@ -298,8 +354,23 @@ def init_db() -> None:
         ensure_news_column(db, "published_to_telegram", "INTEGER NOT NULL DEFAULT 0")
         ensure_news_column(db, "published_at", "TEXT")
         ensure_news_column(db, "telegram_error", "TEXT")
+        ensure_news_column(db, "watchlist_matches", "TEXT NOT NULL DEFAULT ''")
         db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_news_url_unique ON news(url) WHERE url IS NOT NULL")
         db.execute("CREATE INDEX IF NOT EXISTS idx_news_published ON news(published_to_telegram, created_at)")
+        db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS watchlist (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE,
+                topic TEXT NOT NULL,
+                keywords TEXT NOT NULL DEFAULT '',
+                notes TEXT NOT NULL DEFAULT '',
+                active INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        db.execute("CREATE INDEX IF NOT EXISTS idx_watchlist_active ON watchlist(active)")
         for topic in INITIAL_TOPICS:
             db.execute(
                 """
@@ -307,6 +378,14 @@ def init_db() -> None:
                 VALUES (?, ?, ?)
                 """,
                 (topic["name"], "\n".join(topic["keywords"]), now_iso()),
+            )
+        for item in INITIAL_WATCHLIST:
+            db.execute(
+                """
+                INSERT OR IGNORE INTO watchlist (name, topic, keywords, notes, active, created_at)
+                VALUES (?, ?, ?, ?, 1, ?)
+                """,
+                (item["name"], item["topic"], "\n".join(item["keywords"]), item["notes"], now_iso()),
             )
         db.commit()
 
@@ -357,6 +436,7 @@ def index() -> str:
             <h2>API</h2>
             <div class="grid">
               <div class="card"><strong>Topics</strong><p class="muted"><code>GET /topics</code><br><code>POST /topics</code></p></div>
+              <div class="card"><strong>Watchlist</strong><p class="muted"><code>GET /watchlist</code><br><code>POST /watchlist</code></p></div>
               <div class="card"><strong>News</strong><p class="muted"><code>GET /news</code><br><code>POST /news</code></p></div>
               <div class="card"><strong>Evaluation</strong><p class="muted"><code>POST /news/evaluate</code><br><code>POST /news/{id}/evaluate</code></p></div>
               <div class="card"><strong>Collector</strong><p class="muted"><code>POST /collect/run</code><br><code>POST /telegram/publish-pending</code></p></div>
@@ -421,6 +501,67 @@ def delete_topic(topic_id: int):
     get_topic_row(topic_id)
     with closing(connect()) as db:
         db.execute("DELETE FROM topics WHERE id = ?", (topic_id,))
+        db.commit()
+
+
+@app.get("/watchlist", response_model=list[WatchlistOut])
+def list_watchlist(active: bool | None = Query(default=None)) -> list[dict[str, Any]]:
+    with closing(connect()) as db:
+        if active is None:
+            rows = db.execute("SELECT * FROM watchlist ORDER BY name").fetchall()
+        else:
+            rows = db.execute("SELECT * FROM watchlist WHERE active = ? ORDER BY name", (1 if active else 0,)).fetchall()
+        return [row_to_watchlist(row) for row in rows]
+
+
+@app.post("/watchlist", response_model=WatchlistOut, status_code=201)
+def create_watchlist(item: WatchlistCreate) -> dict[str, Any]:
+    keywords = item.keywords or [item.name]
+    try:
+        with closing(connect()) as db:
+            cursor = db.execute(
+                """
+                INSERT INTO watchlist (name, topic, keywords, notes, active, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (item.name, item.topic, "\n".join(keywords), item.notes, 1 if item.active else 0, now_iso()),
+            )
+            db.commit()
+            row = db.execute("SELECT * FROM watchlist WHERE id = ?", (cursor.lastrowid,)).fetchone()
+            return row_to_watchlist(row)
+    except sqlite3.IntegrityError as exc:
+        raise HTTPException(status_code=409, detail="Watchlist item already exists") from exc
+
+
+@app.patch("/watchlist/{item_id}", response_model=WatchlistOut)
+def update_watchlist(item_id: int, item: WatchlistUpdate) -> dict[str, Any]:
+    existing = get_watchlist_row(item_id)
+    with closing(connect()) as db:
+        db.execute(
+            """
+            UPDATE watchlist
+            SET name = ?, topic = ?, keywords = ?, notes = ?, active = ?
+            WHERE id = ?
+            """,
+            (
+                item.name if item.name is not None else existing["name"],
+                item.topic if item.topic is not None else existing["topic"],
+                "\n".join(item.keywords) if item.keywords is not None else existing["keywords"],
+                item.notes if item.notes is not None else existing["notes"],
+                1 if (item.active if item.active is not None else bool(existing["active"])) else 0,
+                item_id,
+            ),
+        )
+        db.commit()
+        row = db.execute("SELECT * FROM watchlist WHERE id = ?", (item_id,)).fetchone()
+        return row_to_watchlist(row)
+
+
+@app.delete("/watchlist/{item_id}", status_code=204, response_class=Response, response_model=None)
+def delete_watchlist(item_id: int):
+    get_watchlist_row(item_id)
+    with closing(connect()) as db:
+        db.execute("DELETE FROM watchlist WHERE id = ?", (item_id,))
         db.commit()
 
 
@@ -489,7 +630,8 @@ def update_news(news_id: int, news: NewsUpdate) -> dict[str, Any]:
                 title = ?, source = ?, date = ?, topic = ?, summary = ?, claims = ?,
                 evidence_level = ?, trial_phase = ?, patient_count = ?,
                 result_strength = ?, safety_notes = ?, hype_risk = ?,
-                practical_relevance = ?, url = ?, needs_verification = ?
+                practical_relevance = ?, url = ?, needs_verification = ?,
+                watchlist_matches = ?
             WHERE id = ?
             """,
             (*news_values(merged)[:-1], news_id),
@@ -532,7 +674,7 @@ def evaluate_existing_news(news_id: int) -> dict[str, Any]:
 def run_collection(limit_per_topic: int = Query(default=settings.COLLECT_LIMIT_PER_TOPIC, ge=1, le=20)) -> CollectRunOut:
     from app.collector import collect_candidates
 
-    candidates = collect_candidates(limit_per_topic=limit_per_topic)
+    candidates = collect_candidates(limit_per_topic=limit_per_topic, topic_queries=collector_queries())
     inserted = 0
     duplicates = 0
     for candidate in candidates:
@@ -546,6 +688,8 @@ def run_collection(limit_per_topic: int = Query(default=settings.COLLECT_LIMIT_P
             )
         )
         candidate.update(evaluated.model_dump(exclude={"rationale"}))
+        matches = [candidate.get("watchlist_matches", ""), match_watchlist(candidate)]
+        candidate["watchlist_matches"] = ", ".join(dict.fromkeys(m for m in matches if m))
         was_inserted, _ = insert_news_data(candidate)
         if was_inserted:
             inserted += 1
@@ -600,6 +744,8 @@ def scheduler_status() -> dict[str, Any]:
         "poll_minutes": settings.POLL_MINUTES,
         "running": worker_task is not None and not worker_task.done(),
         "telegram_dry_run": settings.TELEGRAM_DRY_RUN,
+        "publish_require_watchlist": settings.PUBLISH_REQUIRE_WATCHLIST,
+        "collect_broad_topics": settings.COLLECT_BROAD_TOPICS,
     }
 
 
@@ -619,6 +765,14 @@ def get_news_row(news_id: int) -> sqlite3.Row:
         return row
 
 
+def get_watchlist_row(item_id: int) -> sqlite3.Row:
+    with closing(connect()) as db:
+        row = db.execute("SELECT * FROM watchlist WHERE id = ?", (item_id,)).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="Watchlist item not found")
+        return row
+
+
 def ensure_news_column(db: sqlite3.Connection, name: str, definition: str) -> None:
     columns = {row["name"] for row in db.execute("PRAGMA table_info(news)").fetchall()}
     if name not in columns:
@@ -633,6 +787,43 @@ def row_to_news(row: sqlite3.Row) -> dict[str, Any]:
     return item
 
 
+def row_to_watchlist(row: sqlite3.Row) -> dict[str, Any]:
+    item = dict(row)
+    item["keywords"] = [k for k in item["keywords"].split("\n") if k]
+    item["active"] = bool(item["active"])
+    return item
+
+
+def active_watchlist() -> list[dict[str, Any]]:
+    with closing(connect()) as db:
+        rows = db.execute("SELECT * FROM watchlist WHERE active = 1 ORDER BY name").fetchall()
+        return [row_to_watchlist(row) for row in rows]
+
+
+def collector_queries() -> list[TopicQuery]:
+    queries: list[TopicQuery] = []
+    for item in active_watchlist():
+        terms = item["keywords"] or [item["name"]]
+        queries.append(TopicQuery(item["topic"], terms, item["name"]))
+    if settings.COLLECT_BROAD_TOPICS:
+        queries.extend(TOPIC_QUERIES)
+    return queries or TOPIC_QUERIES
+
+
+def match_watchlist(data: dict[str, Any]) -> str:
+    text = " ".join(
+        str(data.get(field) or "")
+        for field in ["title", "source", "summary", "claims", "url", "topic"]
+    ).lower()
+    matches: list[str] = []
+    for item in active_watchlist():
+        for keyword in item["keywords"] or [item["name"]]:
+            if keyword.lower() in text:
+                matches.append(item["name"])
+                break
+    return ", ".join(dict.fromkeys(matches))
+
+
 def insert_news_data(data: dict[str, Any]) -> tuple[bool, dict[str, Any]]:
     with closing(connect()) as db:
         try:
@@ -641,9 +832,10 @@ def insert_news_data(data: dict[str, Any]) -> tuple[bool, dict[str, Any]]:
                 INSERT INTO news (
                     title, source, date, topic, summary, claims, evidence_level,
                     trial_phase, patient_count, result_strength, safety_notes,
-                    hype_risk, practical_relevance, url, needs_verification, created_at
+                    hype_risk, practical_relevance, url, needs_verification,
+                    watchlist_matches, created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 news_values(data),
             )
@@ -708,6 +900,7 @@ def news_values(data: dict[str, Any]) -> tuple[Any, ...]:
         data.get("practical_relevance") or "",
         str(data["url"]) if data.get("url") else None,
         1 if data.get("needs_verification") else 0,
+        data.get("watchlist_matches") or "",
         data.get("created_at") or now_iso(),
     )
 

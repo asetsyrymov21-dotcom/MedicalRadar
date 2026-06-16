@@ -8,6 +8,8 @@ Personal medical news and research radar for tracking topics, saving signals, an
 - Stores news/research items with evidence fields.
 - Collects candidates from PubMed and Google News RSS searches.
 - Deduplicates news by URL.
+- Keeps a watchlist of exact people, companies, drugs, targets, and trial IDs.
+- Publishes to Telegram only when an item matches the watchlist by default.
 - Runs an optional background scheduler in Docker.
 - Publishes pending items to Telegram, with dry-run mode enabled by default.
 - Provides CRUD endpoints for topics and news.
@@ -87,6 +89,10 @@ curl -X POST http://127.0.0.1:8000/news ^
 - `POST /topics`
 - `PATCH /topics/{topic_id}`
 - `DELETE /topics/{topic_id}`
+- `GET /watchlist`
+- `POST /watchlist`
+- `PATCH /watchlist/{item_id}`
+- `DELETE /watchlist/{item_id}`
 - `GET /news`
 - `POST /news`
 - `GET /news/{news_id}`
@@ -119,6 +125,34 @@ Check scheduler status:
 curl http://127.0.0.1:8000/scheduler
 ```
 
+## Watchlist
+
+The channel is designed to stay quiet unless a story matches a watchlist item.
+
+Initial watchlist:
+
+- David Sinclair: aging, epigenetics, partial reprogramming, Life Biosciences.
+- Professor Harrington: oncology, immunotherapy, oncolytic viruses.
+
+Add a new interest:
+
+```bash
+curl -X POST http://127.0.0.1:8000/watchlist \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Toregem Biopharma",
+    "topic": "Регенерация зубов",
+    "keywords": ["Toregem Biopharma", "USAG-1 antibody", "tooth regrowth Japan"],
+    "notes": "Tooth regeneration watch item"
+  }'
+```
+
+List active interests:
+
+```bash
+curl "http://127.0.0.1:8000/watchlist?active=true"
+```
+
 ## Scheduler
 
 The Docker setup enables the background scheduler by default:
@@ -127,7 +161,9 @@ The Docker setup enables the background scheduler by default:
 MEDICAL_RADAR_ENABLE_SCHEDULER=true
 MEDICAL_RADAR_POLL_MINUTES=180
 MEDICAL_RADAR_COLLECT_LIMIT_PER_TOPIC=5
+MEDICAL_RADAR_COLLECT_BROAD_TOPICS=false
 MEDICAL_RADAR_MIN_PUBLISH_MODE=skip_high_hype
+MEDICAL_RADAR_PUBLISH_REQUIRE_WATCHLIST=true
 ```
 
 Publish modes:

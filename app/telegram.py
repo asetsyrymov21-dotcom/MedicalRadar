@@ -10,6 +10,8 @@ from app.translator import evidence_ru, hype_ru, phase_ru, translate_for_post
 
 
 def should_publish(item: dict[str, Any]) -> bool:
+    if settings.PUBLISH_REQUIRE_WATCHLIST and not item.get("watchlist_matches"):
+        return False
     mode = settings.MIN_HYPE_RISK_TO_PUBLISH
     if mode == "high_priority":
         return item.get("evidence_level") == "human_trial" or item.get("hype_risk") == "low"
@@ -27,6 +29,7 @@ def format_message(item: dict[str, Any]) -> str:
     evidence = html.escape(evidence_ru(item.get("evidence_level")))
     phase = html.escape(phase_ru(item.get("trial_phase")))
     hype = html.escape(hype_ru(item.get("hype_risk")))
+    watchlist = html.escape(item.get("watchlist_matches") or "")
     relevance = html.escape(shorten(translate_for_post(item.get("practical_relevance") or "", 350), 350))
     url = html.escape(item.get("url") or "")
 
@@ -38,6 +41,8 @@ def format_message(item: dict[str, Any]) -> str:
         f"<b>Доказательность:</b> {evidence} / {phase}",
         f"<b>Риск хайпа:</b> {hype}",
     ]
+    if watchlist:
+        parts.append(f"<b>Совпадение:</b> {watchlist}")
     if summary:
         parts.extend(["", summary])
     if relevance:
