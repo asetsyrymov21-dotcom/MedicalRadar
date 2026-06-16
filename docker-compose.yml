@@ -14,6 +14,7 @@ services:
       TELEGRAM_DRY_RUN: "${TELEGRAM_DRY_RUN:-true}"
       TELEGRAM_BOT_TOKEN: "${TELEGRAM_BOT_TOKEN:-}"
       TELEGRAM_CHAT_ID: "${TELEGRAM_CHAT_ID:-}"
+      TRANSLATE_TO_RUSSIAN: "${TRANSLATE_TO_RUSSIAN:-true}"
     volumes:
       - medical-radar-data:/data
     healthcheck:

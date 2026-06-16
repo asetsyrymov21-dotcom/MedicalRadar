@@ -6,6 +6,7 @@ import urllib.request
 from typing import Any
 
 from app import settings
+from app.translator import evidence_ru, hype_ru, phase_ru, translate_for_post
 
 
 def should_publish(item: dict[str, Any]) -> bool:
@@ -18,32 +19,32 @@ def should_publish(item: dict[str, Any]) -> bool:
 
 
 def format_message(item: dict[str, Any]) -> str:
-    title = html.escape(item.get("title") or "Untitled")
+    title = html.escape(translate_for_post(item.get("title") or "Без названия", 250))
     topic = html.escape(item.get("topic") or "unknown")
     source = html.escape(item.get("source") or "unknown")
-    date = html.escape(item.get("date") or item.get("created_at") or "unknown date")
-    summary = html.escape(shorten(item.get("summary") or item.get("claims") or "", 700))
-    evidence = html.escape(item.get("evidence_level") or "unknown")
-    phase = html.escape(item.get("trial_phase") or "unknown")
-    hype = html.escape(item.get("hype_risk") or "medium")
-    relevance = html.escape(shorten(item.get("practical_relevance") or "", 350))
+    date = html.escape(item.get("date") or item.get("created_at") or "дата неизвестна")
+    summary = html.escape(shorten(translate_for_post(item.get("summary") or item.get("claims") or "", 700), 700))
+    evidence = html.escape(evidence_ru(item.get("evidence_level")))
+    phase = html.escape(phase_ru(item.get("trial_phase")))
+    hype = html.escape(hype_ru(item.get("hype_risk")))
+    relevance = html.escape(shorten(translate_for_post(item.get("practical_relevance") or "", 350), 350))
     url = html.escape(item.get("url") or "")
 
     parts = [
         f"<b>{title}</b>",
         "",
-        f"<b>Topic:</b> {topic}",
-        f"<b>Source:</b> {source} | {date}",
-        f"<b>Evidence:</b> {evidence} / {phase}",
-        f"<b>Hype risk:</b> {hype}",
+        f"<b>Тема:</b> {topic}",
+        f"<b>Источник:</b> {source} | {date}",
+        f"<b>Доказательность:</b> {evidence} / {phase}",
+        f"<b>Риск хайпа:</b> {hype}",
     ]
     if summary:
         parts.extend(["", summary])
     if relevance:
-        parts.extend(["", f"<b>Why it matters:</b> {relevance}"])
+        parts.extend(["", f"<b>Почему важно:</b> {relevance}"])
     if url:
         parts.extend(["", url])
-    parts.extend(["", "<i>Monitoring only. Not medical advice.</i>"])
+    parts.extend(["", "<i>Только мониторинг и аналитика. Не медицинская рекомендация.</i>"])
     return "\n".join(parts)
 
 
