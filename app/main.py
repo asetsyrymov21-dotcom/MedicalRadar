@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 import sqlite3
-import os
+import asyncio
 from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
@@ -12,8 +12,10 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel, Field, HttpUrl
 
+from app import settings
 
-DATABASE_PATH = Path(os.getenv("MEDICAL_RADAR_DB_PATH", "medical_radar.db"))
+
+DATABASE_PATH = Path(settings.DATABASE_PATH)
 
 EvidenceLevel = Literal[
     "human_trial",
@@ -212,11 +214,27 @@ class EvaluationOut(BaseModel):
     rationale: list[str]
 
 
+class CollectRunOut(BaseModel):
+    fetched: int
+    inserted: int
+    duplicates: int
+
+
+class PublishRunOut(BaseModel):
+    scanned: int
+    published: int
+    skipped: int
+    failed: int
+    dry_run: bool
+
+
 app = FastAPI(
     title="Medical Radar",
     description="Personal medical topic monitor with evidence and hype-risk labeling.",
     version="0.1.0",
 )
+
+worker_task: asyncio.Task | None = None
 
 
 @app.get("/health")
@@ -242,6 +260,7 @@ def row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
 
 
 def init_db() -> None:
+    DATABASE_PATH.parent.mkdir(parents=True, exist_ok=True)
     with closing(connect()) as db:
         db.execute(
             """
@@ -276,6 +295,11 @@ def init_db() -> None:
             )
             """
         )
+        ensure_news_column(db, "published_to_telegram", "INTEGER NOT NULL DEFAULT 0")
+        ensure_news_column(db, "published_at", "TEXT")
+        ensure_news_column(db, "telegram_error", "TEXT")
+        db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_news_url_unique ON news(url) WHERE url IS NOT NULL")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_news_published ON news(published_to_telegram, created_at)")
         for topic in INITIAL_TOPICS:
             db.execute(
                 """
@@ -288,8 +312,16 @@ def init_db() -> None:
 
 
 @app.on_event("startup")
-def startup() -> None:
+async def startup() -> None:
     init_db()
+    start_background_worker()
+
+
+@app.on_event("shutdown")
+def shutdown() -> None:
+    global worker_task
+    if worker_task:
+        worker_task.cancel()
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -327,6 +359,7 @@ def index() -> str:
               <div class="card"><strong>Topics</strong><p class="muted"><code>GET /topics</code><br><code>POST /topics</code></p></div>
               <div class="card"><strong>News</strong><p class="muted"><code>GET /news</code><br><code>POST /news</code></p></div>
               <div class="card"><strong>Evaluation</strong><p class="muted"><code>POST /news/evaluate</code><br><code>POST /news/{id}/evaluate</code></p></div>
+              <div class="card"><strong>Collector</strong><p class="muted"><code>POST /collect/run</code><br><code>POST /telegram/publish-pending</code></p></div>
               <div class="card"><strong>Docs</strong><p class="muted"><a href="/docs">Open Swagger UI</a></p></div>
             </div>
           </section>
@@ -433,21 +466,10 @@ def create_news(news: NewsCreate) -> dict[str, Any]:
         )
         data.update(evaluated.model_dump(exclude={"rationale"}))
 
-    with closing(connect()) as db:
-        cursor = db.execute(
-            """
-            INSERT INTO news (
-                title, source, date, topic, summary, claims, evidence_level,
-                trial_phase, patient_count, result_strength, safety_notes,
-                hype_risk, practical_relevance, url, needs_verification, created_at
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            news_values(data),
-        )
-        db.commit()
-        row = db.execute("SELECT * FROM news WHERE id = ?", (cursor.lastrowid,)).fetchone()
-        return row_to_news(row)
+    inserted, item = insert_news_data(data)
+    if not inserted:
+        raise HTTPException(status_code=409, detail="News item already exists")
+    return item
 
 
 @app.get("/news/{news_id}", response_model=NewsOut)
@@ -506,6 +528,81 @@ def evaluate_existing_news(news_id: int) -> dict[str, Any]:
     return update_news(news_id, update)
 
 
+@app.post("/collect/run", response_model=CollectRunOut)
+def run_collection(limit_per_topic: int = Query(default=settings.COLLECT_LIMIT_PER_TOPIC, ge=1, le=20)) -> CollectRunOut:
+    from app.collector import collect_candidates
+
+    candidates = collect_candidates(limit_per_topic=limit_per_topic)
+    inserted = 0
+    duplicates = 0
+    for candidate in candidates:
+        evaluated = evaluate_text(
+            EvaluationInput(
+                title=candidate.get("title", ""),
+                source=candidate.get("source", ""),
+                summary=candidate.get("summary", ""),
+                claims=candidate.get("claims", ""),
+                url=candidate.get("url"),
+            )
+        )
+        candidate.update(evaluated.model_dump(exclude={"rationale"}))
+        was_inserted, _ = insert_news_data(candidate)
+        if was_inserted:
+            inserted += 1
+        else:
+            duplicates += 1
+    return CollectRunOut(fetched=len(candidates), inserted=inserted, duplicates=duplicates)
+
+
+@app.post("/telegram/publish-pending", response_model=PublishRunOut)
+def publish_pending(limit: int = Query(default=10, ge=1, le=50)) -> PublishRunOut:
+    from app.telegram import publish_to_telegram, should_publish
+
+    with closing(connect()) as db:
+        rows = db.execute(
+            """
+            SELECT * FROM news
+            WHERE published_to_telegram = 0
+            ORDER BY COALESCE(date, created_at) DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+
+    published = 0
+    skipped = 0
+    failed = 0
+    for row in rows:
+        item = row_to_news(row)
+        if not should_publish(item):
+            mark_telegram_result(item["id"], False, "skipped_by_publish_mode", mark_done=True)
+            skipped += 1
+            continue
+        ok, detail = publish_to_telegram(item)
+        mark_telegram_result(item["id"], ok, detail, mark_done=ok)
+        if ok:
+            published += 1
+        else:
+            failed += 1
+    return PublishRunOut(
+        scanned=len(rows),
+        published=published,
+        skipped=skipped,
+        failed=failed,
+        dry_run=settings.TELEGRAM_DRY_RUN,
+    )
+
+
+@app.get("/scheduler")
+def scheduler_status() -> dict[str, Any]:
+    return {
+        "enabled": settings.ENABLE_SCHEDULER,
+        "poll_minutes": settings.POLL_MINUTES,
+        "running": worker_task is not None and not worker_task.done(),
+        "telegram_dry_run": settings.TELEGRAM_DRY_RUN,
+    }
+
+
 def get_topic_row(topic_id: int) -> sqlite3.Row:
     with closing(connect()) as db:
         row = db.execute("SELECT * FROM topics WHERE id = ?", (topic_id,)).fetchone()
@@ -522,10 +619,76 @@ def get_news_row(news_id: int) -> sqlite3.Row:
         return row
 
 
+def ensure_news_column(db: sqlite3.Connection, name: str, definition: str) -> None:
+    columns = {row["name"] for row in db.execute("PRAGMA table_info(news)").fetchall()}
+    if name not in columns:
+        db.execute(f"ALTER TABLE news ADD COLUMN {name} {definition}")
+
+
 def row_to_news(row: sqlite3.Row) -> dict[str, Any]:
     item = dict(row)
     item["needs_verification"] = bool(item["needs_verification"])
+    if "published_to_telegram" in item:
+        item["published_to_telegram"] = bool(item["published_to_telegram"])
     return item
+
+
+def insert_news_data(data: dict[str, Any]) -> tuple[bool, dict[str, Any]]:
+    with closing(connect()) as db:
+        try:
+            cursor = db.execute(
+                """
+                INSERT INTO news (
+                    title, source, date, topic, summary, claims, evidence_level,
+                    trial_phase, patient_count, result_strength, safety_notes,
+                    hype_risk, practical_relevance, url, needs_verification, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                news_values(data),
+            )
+            db.commit()
+            row = db.execute("SELECT * FROM news WHERE id = ?", (cursor.lastrowid,)).fetchone()
+            return True, row_to_news(row)
+        except sqlite3.IntegrityError:
+            row = None
+            if data.get("url"):
+                row = db.execute("SELECT * FROM news WHERE url = ?", (str(data["url"]),)).fetchone()
+            if row is None:
+                raise
+            return False, row_to_news(row)
+
+
+def mark_telegram_result(news_id: int, ok: bool, detail: str, mark_done: bool) -> None:
+    with closing(connect()) as db:
+        db.execute(
+            """
+            UPDATE news
+            SET published_to_telegram = ?,
+                published_at = ?,
+                telegram_error = ?
+            WHERE id = ?
+            """,
+            (1 if mark_done else 0, now_iso() if ok or mark_done else None, None if ok else detail[:1000], news_id),
+        )
+        db.commit()
+
+
+def start_background_worker() -> None:
+    global worker_task
+    if not settings.ENABLE_SCHEDULER or worker_task is not None:
+        return
+    worker_task = asyncio.create_task(background_worker())
+
+
+async def background_worker() -> None:
+    while True:
+        try:
+            await asyncio.to_thread(run_collection, settings.COLLECT_LIMIT_PER_TOPIC)
+            await asyncio.to_thread(publish_pending, 20)
+        except Exception:
+            pass
+        await asyncio.sleep(settings.POLL_MINUTES * 60)
 
 
 def news_values(data: dict[str, Any]) -> tuple[Any, ...]:

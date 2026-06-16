@@ -6,7 +6,14 @@ services:
     ports:
       - "8000:8000"
     environment:
-      MEDICAL_RADAR_DB_PATH: /data/medical_radar.db
+      MEDICAL_RADAR_DB_PATH: "${MEDICAL_RADAR_DB_PATH:-/data/medical_radar.db}"
+      MEDICAL_RADAR_ENABLE_SCHEDULER: "${MEDICAL_RADAR_ENABLE_SCHEDULER:-true}"
+      MEDICAL_RADAR_POLL_MINUTES: "${MEDICAL_RADAR_POLL_MINUTES:-180}"
+      MEDICAL_RADAR_COLLECT_LIMIT_PER_TOPIC: "${MEDICAL_RADAR_COLLECT_LIMIT_PER_TOPIC:-5}"
+      MEDICAL_RADAR_MIN_PUBLISH_MODE: "${MEDICAL_RADAR_MIN_PUBLISH_MODE:-skip_high_hype}"
+      TELEGRAM_DRY_RUN: "${TELEGRAM_DRY_RUN:-true}"
+      TELEGRAM_BOT_TOKEN: "${TELEGRAM_BOT_TOKEN:-}"
+      TELEGRAM_CHAT_ID: "${TELEGRAM_CHAT_ID:-}"
     volumes:
       - medical-radar-data:/data
     healthcheck:

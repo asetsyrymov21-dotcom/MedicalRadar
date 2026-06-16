@@ -6,6 +6,10 @@ Personal medical news and research radar for tracking topics, saving signals, an
 
 - Stores medical monitoring topics and keywords.
 - Stores news/research items with evidence fields.
+- Collects candidates from PubMed and Google News RSS searches.
+- Deduplicates news by URL.
+- Runs an optional background scheduler in Docker.
+- Publishes pending items to Telegram, with dry-run mode enabled by default.
 - Provides CRUD endpoints for topics and news.
 - Evaluates a news item into:
   - `evidence_level`
@@ -25,6 +29,7 @@ This MVP does not give medical advice. It is for analytics and monitoring only.
 ### Docker
 
 ```bash
+cp .env.example .env
 docker compose up -d --build
 ```
 
@@ -35,6 +40,16 @@ Open:
 - Healthcheck: http://127.0.0.1:8000/health
 
 Data is stored in a Docker volume named `news_medical-radar-data`.
+
+By default, Telegram is in dry-run mode. Edit `.env` when you are ready to send real posts:
+
+```env
+TELEGRAM_DRY_RUN=false
+TELEGRAM_BOT_TOKEN=123456:your_bot_token
+TELEGRAM_CHAT_ID=@your_channel_username
+```
+
+Add the bot as an administrator in the Telegram channel before disabling dry-run.
 
 Useful commands:
 
@@ -79,7 +94,47 @@ curl -X POST http://127.0.0.1:8000/news ^
 - `DELETE /news/{news_id}`
 - `POST /news/evaluate`
 - `POST /news/{news_id}/evaluate`
+- `POST /collect/run`
+- `POST /telegram/publish-pending`
+- `GET /scheduler`
 - `GET /health`
+
+## Manual Collection
+
+Run one collection pass:
+
+```bash
+curl -X POST "http://127.0.0.1:8000/collect/run?limit_per_topic=3"
+```
+
+Publish pending items. In dry-run mode this marks them as published without sending to Telegram:
+
+```bash
+curl -X POST "http://127.0.0.1:8000/telegram/publish-pending?limit=10"
+```
+
+Check scheduler status:
+
+```bash
+curl http://127.0.0.1:8000/scheduler
+```
+
+## Scheduler
+
+The Docker setup enables the background scheduler by default:
+
+```env
+MEDICAL_RADAR_ENABLE_SCHEDULER=true
+MEDICAL_RADAR_POLL_MINUTES=180
+MEDICAL_RADAR_COLLECT_LIMIT_PER_TOPIC=5
+MEDICAL_RADAR_MIN_PUBLISH_MODE=skip_high_hype
+```
+
+Publish modes:
+
+- `all`: publish everything.
+- `skip_high_hype`: skip high hype-risk items.
+- `high_priority`: publish human trials and low hype-risk items only.
 
 ## Initial Topics
 

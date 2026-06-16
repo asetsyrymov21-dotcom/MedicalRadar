@@ -3,4 +3,5 @@ __pycache__/
 *.py[cod]
 medical_radar.db
 .env
+!.env.example
 uvicorn.*.log

@@ -4,4 +4,5 @@ __pycache__
 medical_radar.db
 uvicorn.*.log
 .env
+!.env.example
 .git
