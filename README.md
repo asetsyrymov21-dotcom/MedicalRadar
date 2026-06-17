@@ -6,7 +6,8 @@ Personal medical news and research radar for tracking topics, saving signals, an
 
 - Stores medical monitoring topics and keywords.
 - Stores news/research items with evidence fields.
-- Collects candidates from PubMed and Google News RSS searches.
+- Collects candidates from PubMed, Google News RSS searches, and trusted-source searches.
+- Tracks trusted sources: Stanford Medicine, Mayo Clinic, Mass General Brigham, Nature Aging, Nature Biotechnology, and Cell.
 - Deduplicates news by URL.
 - Keeps a watchlist of exact people, companies, drugs, targets, and trial IDs.
 - Publishes to Telegram only when an item matches the watchlist by default.

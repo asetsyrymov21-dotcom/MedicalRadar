@@ -17,6 +17,15 @@ PUBMED_SEARCH_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
 PUBMED_SUMMARY_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi"
 GOOGLE_NEWS_RSS_URL = "https://news.google.com/rss/search"
 
+TRUSTED_SOURCES = [
+    ("Stanford Medicine", ["med.stanford.edu", "stanfordmedicine.org"]),
+    ("Mayo Clinic", ["mayoclinic.org", "newsnetwork.mayoclinic.org"]),
+    ("Mass General Brigham", ["massgeneralbrigham.org"]),
+    ("Nature Aging", ["nature.com/nataging"]),
+    ("Nature Biotechnology", ["nature.com/nbt"]),
+    ("Cell", ["cell.com/cell"]),
+]
+
 
 @dataclass(frozen=True)
 class TopicQuery:
@@ -42,6 +51,7 @@ def collect_candidates(limit_per_topic: int = 5, topic_queries: list[TopicQuery]
     for topic in topic_queries or TOPIC_QUERIES:
         candidates.extend(collect_pubmed(topic, limit_per_topic))
         candidates.extend(collect_google_news(topic, limit_per_topic))
+        candidates.extend(collect_trusted_sources(topic, limit_per_topic))
     return dedupe_candidates(candidates)
 
 
@@ -98,6 +108,31 @@ def pubmed_summary(ids: list[str]) -> list[dict[str, Any]]:
 
 def collect_google_news(topic: TopicQuery, limit: int) -> list[dict[str, Any]]:
     query = " OR ".join(f'"{term}"' for term in topic.terms[:4])
+    return collect_google_news_query(topic, query, limit)
+
+
+def collect_trusted_sources(topic: TopicQuery, limit: int) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    source_query = " OR ".join(
+        f"site:{domain}"
+        for _, domains in TRUSTED_SOURCES
+        for domain in domains
+    )
+    for source_name, domains in TRUSTED_SOURCES:
+        domain_query = " OR ".join(f"site:{domain}" for domain in domains)
+        topic_query = " OR ".join(f'"{term}"' for term in topic.terms[:4])
+        query = f"({topic_query}) ({domain_query})"
+        for item in collect_google_news_query(topic, query, limit):
+            item["claims"] = f"Trusted source item from {source_name}; verify paper, trial registry, or institutional details."
+            items.append(item)
+    if items:
+        return items
+
+    topic_query = " OR ".join(f'"{term}"' for term in topic.terms[:4])
+    return collect_google_news_query(topic, f"({topic_query}) ({source_query})", limit)
+
+
+def collect_google_news_query(topic: TopicQuery, query: str, limit: int) -> list[dict[str, Any]]:
     params = urllib.parse.urlencode({"q": query, "hl": "en-US", "gl": "US", "ceid": "US:en"})
     xml_text = fetch_text(f"{GOOGLE_NEWS_RSS_URL}?{params}")
     if not xml_text:
