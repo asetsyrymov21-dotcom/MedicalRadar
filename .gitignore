@@ -5,3 +5,19 @@ medical_radar.db
 .env
 !.env.example
 uvicorn.*.log
+
+# Secret prevention
+.env
+.env.*
+!.env.example
+!.env.sample
+!.env.template
+*.key
+*.p12
+*.pfx
+secrets/
+credentials*.json
+service-account*.json
+*.bundle
+.security-workspaces/
+.runtime/
