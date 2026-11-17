@@ -32,7 +32,7 @@ This MVP does not give medical advice. It is for analytics and monitoring only.
 ### Docker
 
 ```bash
-cp .env.example .env
+# Optional: create a local .env to override defaults; never commit it
 docker compose up -d --build
 ```
 
